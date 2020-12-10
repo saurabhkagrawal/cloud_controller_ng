@@ -8,7 +8,8 @@ module VCAP::CloudController
       :space_guids,
       :stacks,
       :include,
-      :lifecycle_type
+      :lifecycle_type,
+      :current_state
     ]
 
     validates_with NoAdditionalParamsValidator

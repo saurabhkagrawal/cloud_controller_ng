@@ -120,6 +120,12 @@ module VCAP::CloudController
       desired_state == ProcessModel::STOPPED
     end
 
+    def current_state
+      return 'STOPPED' if stopped?
+      return 'CRASHED' if processes.any? { |x| x.current_state == 'CRASHED' }
+      'RUNNING'
+    end
+
     def deploying?
       deployments.any?(&:deploying?)
     end

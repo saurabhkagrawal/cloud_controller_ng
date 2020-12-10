@@ -160,6 +160,20 @@ module Diego
       protobuf_decode!(response.body, Bbs::Models::ActualLRPsResponse)
     end
 
+    def actual_lrps(state=nil)
+      if state
+        request = protobuf_encode!({ state: state}, Bbs::Models::ActualLRPsRequest)
+      else
+        request = protobuf_encode!({}, Bbs::Models::ActualLRPsRequest)
+      end
+      response = with_request_error_handling do
+        client.post(Routes::ACTUAL_LRPS, request, PROTOBUF_HEADER)
+      end
+
+      validate_status!(response: response, statuses: [200])
+      protobuf_decode!(response.body, Bbs::Models::ActualLRPsResponse)
+    end
+
     def with_request_error_handling(&blk)
       tries ||= 3
       yield

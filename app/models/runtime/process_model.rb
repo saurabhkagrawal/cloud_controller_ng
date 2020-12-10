@@ -374,6 +374,14 @@ module VCAP::CloudController
       column_changed?(:state) && stopped?
     end
 
+    def current_state
+      @current_state
+    end
+
+    def current_state=(current_state)
+      @current_state = current_state
+    end
+
     def scaling_operation?
       started?
     end

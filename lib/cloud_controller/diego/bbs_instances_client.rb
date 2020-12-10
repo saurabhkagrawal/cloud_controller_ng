@@ -20,6 +20,11 @@ module VCAP::CloudController
         actual_lrps_response.actual_lrps
       end
 
+      def lrp_instances_by_state(state=nil)
+        actual_lrps_response = @client.actual_lrps(state)
+        actual_lrps_response.actual_lrps
+      end
+
       def desired_lrp_instance(process)
         process_guid = ProcessGuid.from_process(process)
         response = handle_diego_errors(process_guid) do

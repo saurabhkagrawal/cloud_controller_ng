@@ -22,6 +22,7 @@ module VCAP::CloudController
             updated_at: app.updated_at,
             name: app.name,
             state: app.desired_state,
+            current_state: app.current_state,
             lifecycle: {
               type: app.lifecycle_type,
               data: app.lifecycle_data.to_hash

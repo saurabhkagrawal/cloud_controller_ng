@@ -1,6 +1,7 @@
 require 'spec_helper'
 require 'actions/process_create_from_app_droplet'
 require 'request_spec_shared_examples'
+require 'diego/lrp_constants'
 
 RSpec.describe 'Apps' do
   let(:user) { VCAP::CloudController::User.make }
@@ -12,6 +13,12 @@ RSpec.describe 'Apps' do
   let(:user_email) { Sham.email }
   let(:user_name) { 'some-username' }
 
+  def make_actual_lrp(process_guid:, state:)
+    ::Diego::Bbs::Models::ActualLRP.new(
+      actual_lrp_key: ::Diego::Bbs::Models::ActualLRPKey.new(process_guid: process_guid, index: 1, domain: 'cf-apps'),
+      state:        state
+    )
+  end
   describe 'POST /v3/apps' do
     let(:buildpack) { VCAP::CloudController::Buildpack.make(stack: stack.name) }
     let(:create_request) do
@@ -358,6 +365,27 @@ RSpec.describe 'Apps' do
     before do
       space.organization.add_user(user)
       space.add_developer(user)
+      TestConfig.config[:diego][:bbs][:ca_cert_file] = ca_cert_file
+      TestConfig.override({
+        diego: {
+          bbs: {
+            url: bbs_url, ca_cert_file: ca_cert_file, client_cert_file: client_cert_file, client_key_file: client_key_file,
+                 connect_timeout: 10, send_timeout: 10, receive_timeout: 10          }
+        }
+      })
+      allow_any_instance_of(HTTPClient::SSLConfig).to receive(:set_trust_ca)
+    end
+
+    let(:bbs_url) { 'https://bbs.example.com:4443' }
+    let(:ca_cert_file) { File.join(Paths::FIXTURES, 'certs/bbs_ca.crt') }
+    let(:client_cert_file) { File.join(Paths::FIXTURES, 'certs/bbs_client.crt') }
+    let(:client_key_file) { File.join(Paths::FIXTURES, 'certs/bbs_client.key') }
+
+    let(:build_client) { instance_double(HTTPClient, post: nil) }
+
+    let(:bbs_client) do
+      ::Diego::Client.new(url: bbs_url, ca_cert_file: ca_cert_file, client_cert_file: client_cert_file, client_key_file: client_key_file,
+                 connect_timeout: 10, send_timeout: 10, receive_timeout: 10)
     end
 
     describe 'query list parameters' do
@@ -385,7 +413,6 @@ RSpec.describe 'Apps' do
         end
       end
     end
-
     it 'returns a paginated list of apps the user has access to' do
       buildpack = VCAP::CloudController::Buildpack.make(name: 'bp-name')
       stack = VCAP::CloudController::Stack.make(name: 'stack-name')
@@ -402,9 +429,30 @@ RSpec.describe 'Apps' do
           space: space,
           desired_state: 'STARTED'
       )
+
+      app_model3 = VCAP::CloudController::AppModel.make(
+        name: 'name3',
+        space: space,
+        desired_state: 'STARTED'
+      )
       VCAP::CloudController::AppModel.make(space: space)
       VCAP::CloudController::AppModel.make
 
+      process_model1 = VCAP::CloudController::ProcessModel.make(app: app_model1)
+      process_model2 = VCAP::CloudController::ProcessModel.make(app: app_model2)
+      process_model3 = VCAP::CloudController::ProcessModel.make(app: app_model3)
+
+      lrp1 = make_actual_lrp(process_guid: process_model1.guid, state: 'CRASHED')
+      lrp2 = make_actual_lrp(process_guid: process_model2.guid, state: 'RUNNING')
+      lrp3 = make_actual_lrp(process_guid: process_model3.guid, state: 'CRASHED')
+
+      actual_lrps = [lrp1, lrp2, lrp3]
+
+      diego_response_body = ::Diego::Bbs::Models::ActualLRPsResponse.encode(
+        ::Diego::Bbs::Models::ActualLRPsResponse.new(error: nil, actual_lrps: actual_lrps)
+      ).to_s
+
+      stub_request(:post, 'https://bbs.example.com:4443/v1/actual_lrps/list').to_return(status: 200, body: diego_response_body)
       get '/v3/apps?per_page=2&include=space', nil, user_header
       expect(last_response.status).to eq(200)
 
@@ -412,7 +460,7 @@ RSpec.describe 'Apps' do
       expect(parsed_response).to be_a_response_like(
         {
             'pagination' => {
-                'total_results' => 3,
+                'total_results' => 4,
                 'total_pages' => 2,
                 'first' => { 'href' => "#{link_prefix}/v3/apps?include=space&page=1&per_page=2" },
                 'last' => { 'href' => "#{link_prefix}/v3/apps?include=space&page=2&per_page=2" },
@@ -424,6 +472,7 @@ RSpec.describe 'Apps' do
                     'guid' => app_model1.guid,
                     'name' => 'name1',
                     'state' => 'STOPPED',
+                    'current_state' => 'STOPPED',
                     'lifecycle' => {
                         'type' => 'buildpack',
                         'data' => {
@@ -461,6 +510,7 @@ RSpec.describe 'Apps' do
                   'guid' => app_model2.guid,
                   'name' => 'name2',
                   'state' => 'STARTED',
+                  'current_state' => 'RUNNING',
                   'lifecycle' => {
                       'type' => 'docker',
                       'data' => {}
@@ -561,35 +611,55 @@ RSpec.describe 'Apps' do
       end
     end
 
-    context 'filtering by stage' do
-      let!(:resource_1) { VCAP::CloudController::AppModel.create(name: '1', space: space) }
-      let!(:resource_2) { VCAP::CloudController::AppModel.create(name: '2', space: space) }
-      let!(:resource_3) { VCAP::CloudController::AppModel.create(name: '3', space: space) }
-      let!(:resource_4) { VCAP::CloudController::AppModel.create(name: '4', space: space) }
+    context 'filtering by state' do
+      let!(:resource_1) { VCAP::CloudController::AppModel.create(guid: 'guid1', name: '1', desired_state: 'STARTED', space: space) }
+      let!(:resource_2) { VCAP::CloudController::AppModel.create(guid: 'guid2', name: '2', desired_state: 'STARTED', space: space) }
+      let!(:resource_3) { VCAP::CloudController::AppModel.create(guid: 'guid3', name: '3', desired_state: 'STARTED', space: space) }
+      let!(:resource_4) { VCAP::CloudController::AppModel.create(guid: 'guid4', name: '4', desired_state: 'STOPPED', space: space) }
 
-      after do
-        VCAP::CloudController::AppModel.plugin :timestamps, update_on_create: true
-        allow(resource_1).to receive(:current_state).and_return("RUNNING")
-        allow(resource_2).to receive(:current_state).and_return("CRASHED")
-        allow(resource_3).to receive(:current_state).and_return("RUNNING")
-        allow(resource_4).to receive(:current_state).and_return("STOPPED")
-      end
+      let!(:process_model1) { VCAP::CloudController::ProcessModel.make(app: resource_1) }
+      let!(:process_model2) { VCAP::CloudController::ProcessModel.make(app: resource_2) }
+      let!(:process_model3) { VCAP::CloudController::ProcessModel.make(app: resource_3) }
+      let!(:process_model4) { VCAP::CloudController::ProcessModel.make(app: resource_4) }
+
+      let!(:lrp1) { make_actual_lrp(process_guid: process_model1.guid, state: 'CRASHED') }
+      let!(:lrp2) { make_actual_lrp(process_guid: process_model2.guid, state: 'RUNNING') }
+      let!(:lrp3) { make_actual_lrp(process_guid: process_model3.guid, state: 'RUNNING') }
+      let!(:lrp4) { make_actual_lrp(process_guid: process_model4.guid, state: 'CRASHED') }
 
       it 'filters by crashed state' do
+        diego_response_body = ::Diego::Bbs::Models::ActualLRPsResponse.encode(
+          ::Diego::Bbs::Models::ActualLRPsResponse.new(error: nil, actual_lrps: [lrp1, lrp4])
+        ).to_s
+        stub_request(:post, 'https://bbs.example.com:4443/v1/actual_lrps/list').with(
+          body: ::Diego::Bbs::Models::ActualLRPsRequest.new(state: 'CRASHED').to_proto
+        ).to_return(status: 200, body: diego_response_body)
         get "/v3/apps?current_state=CRASHED", nil, admin_header
 
         expect(last_response).to have_status_code(200)
-        expect(parsed_response['resources'].map { |r| r['guid'] }).to contain_exactly(resource_2.guid)
+        expect(parsed_response['resources'].map { |r| r['guid'] }).to contain_exactly(resource_1.guid)
       end
 
       it 'filters by running state' do
+        diego_response_body = ::Diego::Bbs::Models::ActualLRPsResponse.encode(
+          ::Diego::Bbs::Models::ActualLRPsResponse.new(error: nil, actual_lrps: [lrp2, lrp3])
+        ).to_s
+
+        stub_request(:post, 'https://bbs.example.com:4443/v1/actual_lrps/list').with(
+          body: ::Diego::Bbs::Models::ActualLRPsRequest.new(state: 'RUNNING').to_proto
+        ).to_return(status: 200, body: diego_response_body)
+
         get "/v3/apps?current_state=RUNNING", nil, admin_header
 
         expect(last_response).to have_status_code(200)
-        expect(parsed_response['resources'].map { |r| r['guid'] }).to contain_exactly(resource_1.guid, resource_3.guid)
+        expect(parsed_response['resources'].map { |r| r['guid'] }).to contain_exactly(resource_2.guid, resource_3.guid)
       end
 
       it 'filters by stopped state' do
+        diego_response_body = ::Diego::Bbs::Models::ActualLRPsResponse.encode(
+          ::Diego::Bbs::Models::ActualLRPsResponse.new(error: nil, actual_lrps: [])
+        ).to_s
+
         get "/v3/apps?current_state=STOPPED", nil, admin_header
 
         expect(last_response).to have_status_code(200)

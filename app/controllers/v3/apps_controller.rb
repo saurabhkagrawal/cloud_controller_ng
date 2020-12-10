@@ -43,12 +43,40 @@ class AppsV3Controller < ApplicationController
               else
                 AppListFetcher.fetch(message, permission_queryer.readable_space_guids, eager_loaded_associations: Presenters::V3::AppPresenter.associated_resources)
               end
-
     decorators = []
     decorators << IncludeSpaceDecorator if IncludeSpaceDecorator.match?(message.include)
     decorators << IncludeOrganizationDecorator if IncludeOrganizationDecorator.match?(message.include)
+    #TODO: put this in fetcher
+    # if current_state = STOPPED we dont need any information from diego
+    if message.current_state && message.current_state != 'STOPPED'
+      actual_lrps = CloudController::DependencyLocator.instance.bbs_instances_client.lrp_instances_by_state(message.current_state)
+      process_guids = actual_lrps.map(&:actual_lrp_key).map(&:process_guid).uniq
+      dataset = dataset.join(
+        :processes, app_guid: Sequel[:apps][:guid]
+      ).where(
+        Sequel[:processes][:guid] => process_guids
+      ).where(desired_state: 'STARTED').qualify(:apps)
+      # TODO: what about desired_state STOPPED but actually still running in diego
+    elsif message.current_state && message.current_state == 'STOPPED'
+      dataset = dataset.where(desired_state: 'STOPPED')
+    elsif !message.current_state
+      actual_lrps = CloudController::DependencyLocator.instance.bbs_instances_client.lrp_instances_by_state
+    end
 
     page_results = SequelPaginator.new.get_page(dataset, message.try(:pagination_options))
+
+    page_results.records.each do |app|
+      next if app.stopped?
+
+      app.processes.each do |proc|
+        if actual_lrps.any? { |lrp| lrp.actual_lrp_key.process_guid == proc.guid && lrp.state == 'CRASHED' }
+          proc.current_state = 'CRASHED'
+        else
+          proc.current_state = 'RUNNING'
+        end
+      end
+    end
+
     handle_order_by_presented_value(page_results)
 
     render status: :ok,

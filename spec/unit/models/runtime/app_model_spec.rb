@@ -530,5 +530,43 @@ module VCAP::CloudController
         end
       end
     end
+    describe '#current_state' do 
+      context 'when app is stopped' do 
+        let(:app_model) { AppModel.make(desired_state: 'STOPPED') }
+
+        it 'returns STOPPED if app desired_state is STOPPED' do 
+          expect(app_model.current_state).to eq 'STOPPED'
+        end
+      end
+
+      context 'when app is started and not crashing' do 
+        let(:app_model) { AppModel.make(desired_state: 'STARTED') }
+        let(:process_model) { ProcessModel.make(app: app_model, instances: 2, type: 'web') }
+        
+        before do
+          allow(process_model).to receive(:current_state).and_return("RUNNING")
+        end
+
+        it 'returns RUNNING' do
+          expect(app_model.current_state).to eq('RUNNING')
+        end
+      end
+
+      context 'when app is started and crashing' do 
+        let(:app_model) { AppModel.make(desired_state: 'STARTED') }
+        let(:process_model) { ProcessModel.make(app: app_model, instances: 2, type: 'web') }
+
+        let(:process_model2) { ProcessModel.make(app: app_model, instances: 2, type: 'worker') }
+        before do
+          allow_any_instance_of(AppModel).to receive(:processes).and_return([process_model, process_model2])
+          allow(process_model).to receive(:current_state).and_return("RUNNING")
+          allow(process_model2).to receive(:current_state).and_return("CRASHED")
+        end
+
+        it 'returns CRASHING' do
+          expect(app_model.current_state).to eq('CRASHED')
+        end
+      end
+    end
   end
 end

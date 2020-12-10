@@ -63,6 +63,7 @@ Google::Protobuf::DescriptorPool.generated_pool.build do
     optional :domain, :string, 1
     optional :cell_id, :string, 2
     optional :process_guid, :string, 3
+    optional :state, :string, 5
     oneof :optional_index do
       optional :index, :int32, 4
     end
