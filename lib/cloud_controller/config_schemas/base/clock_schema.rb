@@ -184,10 +184,22 @@ module VCAP::CloudController
             max_labels_per_resource: Integer,
             max_annotations_per_resource: Integer,
             custom_metric_tag_prefix_list: Array,
+            optional(:kubernetes) => {
+              host_url: String,
+              service_account: {
+                token_file: String,
+              },
+              ca_file: String,
+              workloads_namespace: String,
+              kpack: {
+                builder_namespace: String,
+                registry_service_account_name: String,
+                registry_tag_base: String,
+              }
+            },
           }
         end
         # rubocop:enable Metrics/BlockLength
-
         class << self
           def configure_components(config); end
         end
